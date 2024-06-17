@@ -8,7 +8,7 @@ decorator==5.1.1
 dm-env==1.6
 dm-tree==0.1.8
 dm_control==1.0.20
-etils==1.9.1
+# etils==1.9.1
 executing==2.0.1
 fsspec==2024.6.0
 glfw==2.7.0

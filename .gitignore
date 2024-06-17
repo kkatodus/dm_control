@@ -2,3 +2,5 @@ __pycache__/
 /dm_venv/*
 
 !/dm_venv/lib/python3.12/site-packages/dm_control/
+
+/trained_checkpoints

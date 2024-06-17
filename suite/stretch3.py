@@ -79,7 +79,8 @@ class Test(base.Task):
   def get_observation(self, physics):
     """Returns the state we want to expose the agent to"""
     obs = collections.OrderedDict()
-    obs['something'] = [0, 0]
+    obs['wrist_feed'] = physics.render(camera_id=0, height=256, width=320)
+    obs['head_feed'] = physics.render(camera_id=3, height=256, width=320)
     return obs
 
   def get_reward(self, physics):
