@@ -38,9 +38,11 @@ def translate_rt1_action_to_sim_actions(rt1_action):
 	rotation_delta = rt1_action['action/rotation_delta']
 	terminate_episode = rt1_action['action/terminate_episode']
 	world_vector = rt1_action['action/world_vector']
+
 	discounted_return = rt1_action['info/discounted_return']
 	return_info = rt1_action['info/return']
 	action_tokens = rt1_action['state/action_tokens']
+	print('action_tokens', action_tokens)
 	image = rt1_action['state/image']
 	step_num = rt1_action['state/step_num']
 	t = rt1_action['state/t']
@@ -67,8 +69,9 @@ class Simulator:
 			self.model = model
 			self.action = model.signatures['action']
 
+	def get_env_action_spec(self):
+		return self.action_spec
 		
-
 	def set_policy(self, policy_name):
 		self.policy = self.id2policy[policy_name]
 
@@ -112,9 +115,6 @@ class Simulator:
 	def policy_rt1(self, timestep):
 		wrist_image = timestep.observation['wrist_feed']
 		head_image = timestep.observation['head_feed']
-		print(wrist_image.shape)
-		print(head_image.shape)
-		print(timestep.observation.keys())
 		batch = 6
 		sample_input = {
 			"arg_0_discount": tf.constant(0.5, shape=[1]),
