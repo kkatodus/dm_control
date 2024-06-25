@@ -5,6 +5,7 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
 import matplotlib
+import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from IPython.display import HTML
@@ -13,6 +14,24 @@ from tf_agents.policies import py_tf_eager_policy
 ACTUATORS = ['forward', 'turn', 'lift', 'arm_extend', 'wrist_yaw', 'wrist_pitch', 'wrist_roll', 'grip', 'head_pan', 'head_tilt']
 
 ACTION_TOKENS = ['mode', 'gripper_x', 'gripper_y', 'gripper_z', 'gripper_roll', 'gripper_pitch', 'gripper_yaw', 'gripper_opening', 'base_x', 'base_y', 'base_yaw']
+
+RT1_ACTION_KEYS = [
+	'action/base_displacement_vector',
+	'action/base_displacement_vertical_rotation',
+	'action/gripper_closedness_action',
+	'action/rotation_delta',
+	'action/terminate_episode',
+	'action/world_vector',
+]
+
+RT1_OTHER_KEYS = [
+	'info/discounted_return',
+	'info/return'
+	'state/action_tokens',
+	'state/image',
+	'state/step_num',
+	'state/t'
+]
 
 MAX_TOKEN_VALUE = 256
 
@@ -54,8 +73,6 @@ def map_token_value_to_mujoco_actuation(token_value, actuator_name):
 	limits = ACTUATOR_LIMITS[actuator_name]
 	return limits[0] + (limits[1]-limits[0])*token_value/MAX_TOKEN_VALUE
 
-
-
 class Simulator:
 	def __init__(self, domain_name='stretch3', task_name='test', use_rt1=False):
 		env = suite.load(domain_name=domain_name, task_name=task_name)
@@ -76,11 +93,40 @@ class Simulator:
 		self.camera_seq = []
 		self.action_token_seq = None
 		self.time = 0
+		self.action_records = {
+			'action/base_displacement_vector_0':[],
+			'action/base_displacement_vector_1':[],
+			'action/base_displacement_vertical_rotation':[],
+			'action/gripper_closedness_action':[],
+			'action/rotation_delta_0':[],
+			'action/rotation_delta_1':[],
+			'action/rotation_delta_2':[],
+			'action/terminate_episode_0':[],
+			'action/terminate_episode_1':[],
+			'action/terminate_episode_2':[],			
+			'action/world_vector_0':[],
+			'action/world_vector_1':[],
+			'action/world_vector_2':[],
+		}
+		self.action_record_dims = {
+			'action/base_displacement_vector':2,
+			'action/base_displacement_vertical_rotation':1,
+			'action/gripper_closedness_action':1,
+			'action/rotation_delta':3,
+			'action/terminate_episode':3,
+			'action/world_vector':3,
+		}
 		if use_rt1:
-			model = tf.saved_model.load( './trained_checkpoints/rt1main/', tags=None, options=None)
+			model_path = './trained_checkpoints/rt1main/'
+			model = tf.saved_model.load(model_path, tags=None, options=None)
+			# model = py_tf_eager_policy.SavedModelPyTFEagerPolicy(
+    		# 				model_path=model_path,
+    		# 				load_specs_from_pbtxt=True,
+    		# 				use_tf_function=True)
 			self.model = model
 			self.action = model.signatures['action']
 			self.universal_sentence_encoder = hub.load('https://tfhub.dev/google/universal-sentence-encoder-large/5')
+
 		
 	def get_env_action_spec(self):
 		return self.action_spec
@@ -109,12 +155,16 @@ class Simulator:
 		action_tokens = rt1_action['state/action_tokens']
 		base_forward = get_rt1_action_val_for_key(action_tokens, 'base_y')
 		forward_actuator_idx = ACTUATORS.index('forward')
+		head_tilt_actuator_idx = ACTUATORS.index('head_tilt')
+		head_pan_actuator_idx = ACTUATORS.index('head_pan')
 		
 		# image = rt1_action['state/image']
 		# step_num = rt1_action['state/step_num']
 		# t = rt1_action['state/t']
 		action = [0]*10
 		action[forward_actuator_idx] = map_token_value_to_mujoco_actuation(base_forward, 'forward')
+		action[head_tilt_actuator_idx] = -1
+		action[head_pan_actuator_idx] = -2
 		return action
 
 	def run_sim(self, duration=4):
@@ -126,12 +176,13 @@ class Simulator:
 		head_camera = timestep.observation['head_feed']
 		wrist_camera = timestep.observation['wrist_feed']
 		third_person = timestep.observation['third_person']
+		forth_person = timestep.observation['forth_person']
 		#initializing the last 6 images to be the same
-		self.camera_seq = [head_camera]*6
+		self.camera_seq = [third_person]*6
 		#initializing the last 6 action tokens to be the same
 		self.action_token_seq = tf.constant(NEUTRAL_POSITION, shape=[1, 6, 11, 1, 1])
 
-		frames.append(np.hstack((head_camera, wrist_camera, third_person)))
+		frames.append(np.hstack((head_camera, wrist_camera, third_person, forth_person)))
 		
 		while self.env.physics.data.time < duration:
 			action = self.policy(timestep)
@@ -140,11 +191,14 @@ class Simulator:
 			head_camera = timestep.observation['head_feed']
 			wrist_camera = timestep.observation['wrist_feed']
 			third_person = timestep.observation['third_person']
-			self.camera_seq.append(head_camera)
+			forth_person = timestep.observation['forth_person']
+			self.camera_seq.append(third_person)
 			rewards.append(timestep.reward)
 			observations.append(copy.deepcopy(timestep.observation))
-			frames.append(np.hstack((head_camera, wrist_camera, third_person)))
+			frames.append(np.hstack((head_camera, wrist_camera, third_person, forth_person)))
 			self.time += 1
+
+		self.plot_rt1_actions()
 
 		html_video = display_video(frames, framerate=1./self.env.control_timestep())
 		return html_video
@@ -152,7 +206,22 @@ class Simulator:
 	def launch_viewer(self):
 		self.check_policy()
 		viewer.launch(self.env, policy=self.policy)
-	
+
+	def record_rt1_actions(self, rt1_action):
+		for key in RT1_ACTION_KEYS:
+			if self.action_record_dims[key] == 1:
+				self.action_records[key].append(rt1_action[key][0][0].numpy())
+			else:
+				for i in range(self.action_record_dims[key]):
+					self.action_records[key+'_'+str(i)].append(rt1_action[key][0][i].numpy())
+
+	def plot_rt1_actions(self):
+		fig, ax = plt.subplots(len(self.action_records), figsize=(20, 50))
+		for idx, (key, value) in enumerate(self.action_records.items()):
+			ax[idx].plot(value)
+			ax[idx].set_title(key)
+		plt.savefig('rt1_actions.png')			
+
 #####REGISTER POLICIES HERE#####
 	
 	def policy_random(self, timestep):
@@ -164,6 +233,7 @@ class Simulator:
 	def policy_rt1(self, timestep):
 		wrist_image = timestep.observation['wrist_feed']
 		head_image = timestep.observation['head_feed']
+		third_person = timestep.observation['third_person']
 		# print('natural_language_command_embedding:', self.natural_language_command_embedding.shape)	
 		# print('wrist_image:', wrist_image.shape)
 		# print('head_image:', head_image.shape)
@@ -175,12 +245,12 @@ class Simulator:
 		last_6_images_tf = tf.expand_dims(last_6_images_tf, axis=0)
 
 		sample_input = {
-			"arg_0_discount": tf.constant(0.5, shape=[1]),
+			"arg_0_discount": tf.constant(1.0, shape=[1], dtype=tf.float32),
 			"arg_0_observation_base_pose_tool_reached": tf.constant(0.5, shape=[BATCH,7]),
 			"arg_0_observation_gripper_closed": tf.constant(0.5, shape=[BATCH, 1]),
 			"arg_0_observation_gripper_closedness_commanded": tf.constant(0.5, shape=[BATCH, 1]),
 			"arg_0_observation_height_to_bottom": tf.constant(0.5, shape=[BATCH, 1]),
-			"arg_0_observation_image": tf.expand_dims(head_image, axis=0),
+			"arg_0_observation_image": tf.expand_dims(third_person, axis=0),
 			"arg_0_observation_natural_language_embedding": self.natural_language_command_embedding,
 			"arg_0_observation_natural_language_instruction":[self.natural_language_command],
 			"arg_0_observation_orientation_box":tf.constant(0.5, shape=[BATCH,2,3]),
@@ -189,8 +259,8 @@ class Simulator:
 			"arg_0_observation_rotation_delta_to_go": tf.constant(0.5, shape=[BATCH,3]),
 			"arg_0_observation_src_rotation": tf.constant(0.5, shape=[BATCH,4]),
 			"arg_0_observation_vector_to_go":tf.constant(0.5, shape=[BATCH,3]),
-			"arg_0_observation_workspace_bounds": tf.constant(0.5, shape=[BATCH,3, 3]),
-			"arg_0_reward": tf.constant(0.5, shape=[1]),
+			"arg_0_observation_workspace_bounds": tf.constant(0.5, shape=[BATCH, 3, 3]),
+			"arg_0_reward": tf.constant(0.0, shape=[1], dtype=tf.float32),
 			"arg_0_step_type": tf.constant(1, shape=[1,], dtype=tf.int32),
 			"arg_1_action_tokens": self.action_token_seq,
 			"arg_1_image": last_6_images_tf,
@@ -198,6 +268,7 @@ class Simulator:
 			"arg_1_t":tf.constant(self.time, shape=[1, 1, 1, 1, 1], dtype=tf.int32),
 		}
 		model_action = self.action(**sample_input)
+		self.record_rt1_actions(model_action)
 		self.action_token_seq = model_action['state/action_tokens']
 		action = self.translate_rt1_action_to_sim_actions(model_action)
 		# action = self.random_state.uniform(self.action_spec.minimum, self.action_spec.maximum, self.action_spec.shape)
