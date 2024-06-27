@@ -4,3 +4,5 @@ __pycache__/
 !/dm_venv/lib/python3.12/site-packages/dm_control/
 
 /trained_checkpoints
+
+rt_1_x_tf_trained_for_002272480_step/
