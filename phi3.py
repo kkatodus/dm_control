@@ -9,16 +9,20 @@ model = AutoModelForCausalLM.from_pretrained(model_id, device_map="cuda", trust_
 
 processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True) 
 
+
+object = 'bottle of coke'
+
 messages = [ 
-    {"role": "user", "content": "<|image_1|>\nWhat is shown in this image?"}, 
+    # {"role": "user", "content": f"<|image_1|>\nGiven the image, return a response in the following format. <Description of the image>\n<Where I should look to find {object}>\n<How I should move in the room to get to our searching space>\n<Direction to move chosen from [forward, backward, right, left] relative to the point of view>"}, 
+	{'role':'user', 'content':'<|image_1|>\nNow I am looking for a toilet, should I keep looking in the current room or should I look somewhere else?'},
     # {"role": "assistant", "content": "The chart displays the percentage of respondents who agree with various statements about their preparedness for meetings. It shows five categories: 'Having clear and pre-defined goals for meetings', 'Knowing where to find the information I need for a meeting', 'Understanding my exact role and responsibilities when I'm invited', 'Having tools to manage admin tasks like note-taking or summarization', and 'Having more focus time to sufficiently prepare for meetings'. Each category has an associated bar indicating the level of agreement, measured on a scale from 0% to 100%."}, 
     # {"role": "user", "content": "Provide insightful questions to spark discussion."} 
 ] 
 
-url = "https://assets-c4akfrf5b4d3f4b7.z01.azurefd.net/assets/2024/04/BMDataViz_661fb89f3845e.png" 
-image = Image.open(requests.get(url, stream=True).raw) 
+# url = "https://assets-c4akfrf5b4d3f4b7.z01.azurefd.net/assets/2024/04/BMDataViz_661fb89f3845e.png" 
+# image = Image.open(requests.get(url, stream=True).raw) 
 
-image_path = './deskimage.png'
+image_path = './kitchen.jpg'
 image = Image.open(image_path)
 
 prompt = processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)

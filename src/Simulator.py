@@ -15,6 +15,7 @@ import tf_agents
 from tf_agents.trajectories import time_step as ts
 from collections import defaultdict
 from datetime import datetime
+from PIL import Image
 
 ACTUATORS = ['left_wheel_vel', 'right_wheel_vel', 'lift', 'arm', 'wrist_yaw', 'wrist_pitch', 'wrist_roll', 'gripper', 'head_pan', 'head_tilt']
 ACTUATOR_LIMITS = {
@@ -33,7 +34,6 @@ ACTUATOR_LIMITS = {
 
 
 ACTION_TOKENS = ['mode', 'gripper_x', 'gripper_y', 'gripper_z', 'gripper_roll', 'gripper_pitch', 'gripper_yaw', 'gripper_opening', 'base_x', 'base_y', 'base_yaw']
-
 RT1_RAW_ACTION_KEYS = [
     'base_displacement_vector',
     'gripper_closedness_action',
@@ -96,7 +96,7 @@ def map_RT1_output_to_mujoco_limits(rt1_action, mujoco_limits, rt1_limits=[-1, 1
 
 
 class Simulator:
-    def __init__(self, domain_name='stretch3', task_name='test', use_rt1=False, use_phi3=False, output_dir=None):
+    def __init__(self, domain_name='stretch3', task_name='test', use_rt1=False, use_phi3=False, output_dir=None, use_openvla=False):
         env = suite.load(domain_name=domain_name, task_name=task_name)
         action_spec = env.action_spec()
         self.env = env
@@ -120,8 +120,9 @@ class Simulator:
         }
         self.rt1_action_records = defaultdict(list)
         self.mujoco_action_records = defaultdict(list)
-        self.input_camera_type = 'head_feed'
+        self.input_camera_type = None
         self.input_camera_options = ['head_feed', 'wrist_feed', 'third_person', 'forth_person']
+        self.half_camera_options = ['head_feed_half', 'wrist_feed_half', 'forth_person_half']
         self.rt1_observation = None
         self.rt1_policy_state = None
         self.multi_camera = None
@@ -139,7 +140,6 @@ class Simulator:
             self.rt1_observation = tf_agents.specs.zero_spec_nest(tf_agents.specs.from_spec(self.tfa_policy.time_step_spec.observation))
 
             self.universal_sentence_encoder = hub.load('https://tfhub.dev/google/universal-sentence-encoder-large/5')
-
 
 ###############UTILS#################################
 
@@ -168,8 +168,17 @@ class Simulator:
 
     def set_camera_type(self, camera_type):
         if camera_type not in self.input_camera_options:
-            raise ValueError('Invalid camera type. Please choose from: head_feed, wrist_feed, third_person')
+            raise ValueError(f'Invalid camera type. Please choose from: {" ".join(self.input_camera_options)}')
+        if self.multi_camera:
+            raise ValueError('Please use either set_camera_type or set_multi_camera, not both')
         self.input_camera_type = camera_type
+
+    def set_multi_camera(self, camera_types):
+        if not all([camera_type in self.half_camera_options for camera_type in camera_types]):
+            raise ValueError(f'Invalid camera type. Please choose from: {" ".join(self.half_camera_options)}')
+        if self.input_camera_type:
+            raise ValueError('Please use either set_camera_type or set_multi_camera, not both')
+        self.multi_camera = camera_types
 
     def set_natural_language_command(self, command):
         self.natural_language_command = command
@@ -202,8 +211,7 @@ class Simulator:
         world_vector_z = world_vector[2]
 
         world_vector_r = np.sqrt(world_vector_x**2 + world_vector_y**2)
-        world_vector_theta = np.arctan2(world_vector_y, world_vector_x)
-
+        world_vector_theta = np.arctan2(world_vector_y, world_vector_x) + np.pi/2
         #Mujoco actuator indices		
         head_tilt_actuator_idx = ACTUATORS.index('head_tilt')
         head_pan_actuator_idx = ACTUATORS.index('head_pan')
@@ -226,16 +234,16 @@ class Simulator:
         gripper_opening = map_RT1_output_to_mujoco_limits(gripper_closedness[0], ACTUATOR_LIMITS['gripper'])
 
         action = [0]*10
-        action[head_tilt_actuator_idx] = -1
+        action[head_tilt_actuator_idx] = -1.1
         action[head_pan_actuator_idx] = -1.57
         action[left_wheel_vel_actuator_idx] = w_left
         action[right_wheel_vel_actuator_idx] = w_right
         action[lift_actuator_idx] = lift_height
-        action[arm_actuator_idx] = max(arm_extend-0.05, 0)
-        # action[wrist_yaw_actuator_idx] = wrist_yaw
-        action[wrist_yaw_actuator_idx] = -0.1
+        action[arm_actuator_idx] = min(arm_extend+0.07, ACTUATOR_LIMITS['arm'][1])
+        action[wrist_yaw_actuator_idx] = wrist_yaw
+        # action[wrist_yaw_actuator_idx] = 0.05
         # action[wrist_pitch_actuator_idx] = wrist_pitch
-        action[wrist_pitch_actuator_idx] = 0
+        action[wrist_pitch_actuator_idx] = 0.1
         # action[wrist_roll_actuator_idx] = wrist_roll
         action[wrist_roll_actuator_idx] = 0
         action[gripper_actuator_idx] = gripper_opening*-1
@@ -262,16 +270,24 @@ class Simulator:
         frames.append(np.hstack((head_camera, wrist_camera, third_person, forth_person)))
 
         looped = -1
+        stepgap = 4
 
+        steps = 0
+        last_action = None
         while self.env.physics.data.time < duration:
+        
             print(self.env.physics.data.time/duration)
             if self.env.physics.data.time/duration == 0.0:
                 print('starting')
                 looped += 1
             if looped==1:
                 break
-            mujoco_action = self.policy(timestep)
-        
+                
+            if steps%stepgap==0:    
+                mujoco_action = self.policy(timestep)
+            else:
+                mujoco_action = last_action
+            last_action = mujoco_action
             timestep = self.env.step(mujoco_action)
             #could access number of cameras by env.physics.model.ncam
             head_camera = timestep.observation['head_feed']
@@ -280,12 +296,26 @@ class Simulator:
             forth_person = timestep.observation['forth_person']
             
             frames.append(np.hstack((head_camera, wrist_camera, third_person, forth_person)))
-
+            self.rt1_camera_seq.append(self.get_camera_input_from_timestep(timestep))
+            steps += 1
         self.plot_rt1_actions()
         self.plot_mujoco_actions()
         html_video = display_video(frames, video_path=os.path.join(self.output_dir_for_run, f'{self.natural_language_command}-sim.mp4'), framerate=1./self.env.control_timestep())
         rt1_video = display_video(self.rt1_camera_seq, video_path=os.path.join(self.output_dir_for_run, f'{self.natural_language_command}-rt1.mp4'), framerate=1./self.env.control_timestep())
+        im = Image.fromarray(self.rt1_camera_seq[-1])
+        im.save("your_file.jpeg")
         return html_video	
+    
+    def get_camera_input_from_timestep(self, timestep):
+        if self.multi_camera:
+            camera_inputs = []
+            for camera_type in self.multi_camera:
+                camera_inputs.append(timestep.observation[camera_type])
+            stacked = np.hstack(camera_inputs)
+            return stacked
+        else:
+            return timestep.observation[self.input_camera_type]
+
     
 
 #################RECORDING RT1 ACTIONS#####################
@@ -325,19 +355,9 @@ class Simulator:
     def policy_rt1(self, timestep):
 
         self.rt1_observation['natural_language_embedding'] = self.natural_language_command_embedding
+        camera_input = self.get_camera_input_from_timestep(timestep)
+        self.rt1_observation['image'] = camera_input
         #experimenting whether feeding both head and wrist camera images to rt1 improves performance
-        if self.multi_camera:
-            camera_inputs = []
-            for camera_type in self.multi_camera:
-                camera_inputs.append(timestep.observation[camera_type])
-            stacked = np.hstack(camera_inputs)
-            self.rt1_observation['image'] = stacked
-        else:
-            self.rt1_observation['image'] = timestep.observation[self.input_camera_type]
-
-        
-        self.rt1_camera_seq.append(self.rt1_observation['image'])
-        self.rt1_observation['image'] = timestep.observation[self.input_camera_type]
         tfa_time_step = ts.transition(self.rt1_observation, reward=np.zeros((), dtype=np.float32))
 
         policy_step = self.tfa_policy.action(tfa_time_step, self.rt1_policy_state)
